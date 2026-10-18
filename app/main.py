@@ -26,30 +26,85 @@ app.add_middleware(CORSMiddleware, allow_origins=[origin.strip().rstrip("/") for
 def health():
     return {"status": "ok", "version": "5.0.0", "rag": "enabled", "supplier_intelligence": "enabled", "price_intelligence": "advisory", "risk_monitoring": "human_review_only", "audit_chain": "enabled"}
 
+
 @app.post("/auth/register", response_model=UserOut, status_code=201)
 def register(data: RegisterIn, db: Session = Depends(get_db)):
-    role = data.role.lower()
-    allowed = {"buyer", "supplier"}
+    role = data.role.lower().strip()
+    allowed_roles = {"buyer", "supplier"}
+
     if settings.bidsynq_allow_admin_registration:
-        allowed.add("admin")
-    if role not in allowed:
-        raise HTTPException(400, f"Role must be one of: {', '.join(sorted(allowed))}")
-    if db.scalar(select(User).where(User.email == data.email.lower())):
-        raise HTTPException(409, "Email is already registered")
-    user = User(name=data.name, email=data.email.lower(), password_hash=hash_password(data.password), role=role, company_name=data.company_name)
-    db.add(user); db.flush(); append_audit(db, user.id, "user.registered", "user", user.id, {"role": role}); db.commit(); db.refresh(user)
-    return user
+        allowed_roles.add("admin")
+
+    if role not in allowed_roles:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Role must be one of: {', '.join(sorted(allowed_roles))}",
+        )
+
+    email = str(data.email).strip().lower()
+
+    existing_user = db.scalar(
+        select(User).where(User.email == email)
+    )
+
+    if existing_user:
+        raise HTTPException(
+            status_code=409,
+            detail="Email is already registered",
+        )
+
+    user = User(
+        name=data.name.strip(),
+        email=email,
+        password_hash=hash_password(data.password),
+        role=role,
+        company_name=data.company_name.strip(),
+    )
+
+    try:
+        db.add(user)
+        db.flush()
+
+        append_audit(
+            db,
+            user.id,
+            "user.registered",
+            "user",
+            user.id,
+            {"role": role},
+        )
+
+        db.commit()
+        db.refresh(user)
+        return user
+
+    except Exception:
+        db.rollback()
+        raise
+
 
 @app.post("/auth/login", response_model=TokenOut)
 def login(data: LoginIn, db: Session = Depends(get_db)):
-    user = db.scalar(select(User).where(User.email == data.email.lower()))
-    if not user or not verify_password(data.password, user.password_hash):
-        raise HTTPException(401, "Incorrect email or password")
-    return TokenOut(access_token=create_access_token(user.id))
+    email = str(data.email).strip().lower()
 
-@app.get("/auth/me", response_model=UserOut)
-def me(user: User = Depends(get_current_user)):
-    return user
+    user = db.scalar(
+        select(User).where(User.email == email)
+    )
+
+    if user is None or not verify_password(
+        data.password,
+        user.password_hash,
+    ):
+        raise HTTPException(
+            status_code=401,
+            detail="Incorrect email or password",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+
+    token = create_access_token(user.id)
+
+    return TokenOut(access_token=token)
+
 
 @app.get("/dashboard/summary")
 def dashboard_summary(db: Session = Depends(get_db), user: User = Depends(get_current_user)):
