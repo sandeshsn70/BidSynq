@@ -1,24 +1,62 @@
+
 from sqlalchemy import create_engine
 from sqlalchemy.orm import DeclarativeBase, sessionmaker
+
 from app.config import settings
 
-# Render commonly provides postgres:// or postgresql:// URLs. Use the installed
-# psycopg v3 driver explicitly so SQLAlchemy does not look for psycopg2.
-database_url = settings.database_url
-if database_url.startswith("postgres://"):
-    database_url = database_url.replace("postgres://", "postgresql+psycopg://", 1)
-elif database_url.startswith("postgresql://"):
-    database_url = database_url.replace("postgresql://", "postgresql+psycopg://", 1)
 
-connect_args = {"check_same_thread": False} if database_url.startswith("sqlite") else {}
-engine = create_engine(database_url, connect_args=connect_args, pool_pre_ping=True)
-SessionLocal = sessionmaker(bind=engine, autoflush=False, autocommit=False)
+def normalize_database_url(url: str) -> str:
+    """Normalize database URLs for the installed PostgreSQL driver."""
+    if url.startswith("postgres://"):
+        return url.replace(
+            "postgres://",
+            "postgresql+psycopg://",
+            1,
+        )
+
+    if url.startswith("postgresql://"):
+        return url.replace(
+            "postgresql://",
+            "postgresql+psycopg://",
+            1,
+        )
+
+    return url
+
+
+DATABASE_URL = normalize_database_url(settings.database_url)
+
+connect_args = (
+    {"check_same_thread": False}
+    if DATABASE_URL.startswith("sqlite")
+    else {}
+)
+
+engine = create_engine(
+    DATABASE_URL,
+    connect_args=connect_args,
+    pool_pre_ping=True,
+    pool_recycle=300,
+)
+
+SessionLocal = sessionmaker(
+    bind=engine,
+    autoflush=False,
+    autocommit=False,
+    expire_on_commit=False,
+)
+
 
 class Base(DeclarativeBase):
+    """Base class for all SQLAlchemy models."""
+
     pass
 
+
 def get_db():
+    """Provide a database session and always close it."""
     db = SessionLocal()
+
     try:
         yield db
     finally:
