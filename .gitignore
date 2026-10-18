@@ -1,0 +1,12 @@
+.venv/
+__pycache__/
+*.py[cod]
+.env
+*.db
+.pytest_cache/
+.coverage
+frontend/node_modules/
+frontend/.next/
+frontend/.env.local
+storage/tender_documents/*
+!storage/tender_documents/.keep

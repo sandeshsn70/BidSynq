@@ -1,0 +1,45 @@
+services:
+  db:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: bidsynq
+      POSTGRES_USER: bidsynq
+      POSTGRES_PASSWORD: bidsynq_dev_password
+    ports:
+      - "5432:5432"
+    volumes:
+      - bidsynq_pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U bidsynq -d bidsynq"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+  api:
+    build: .
+    environment:
+      SECRET_KEY: ${SECRET_KEY:-local-compose-only-change-this-secret}
+      ACCESS_TOKEN_MINUTES: 60
+      DATABASE_URL: postgresql+psycopg://bidsynq:bidsynq_dev_password@db:5432/bidsynq
+      BIDSYNQ_ALLOW_ADMIN_REGISTRATION: "false"
+      GROQ_API_KEY: ${GROQ_API_KEY:-}
+      GROQ_MODEL: ${GROQ_MODEL:-llama-3.3-70b-versatile}
+      MAX_DOCUMENT_MB: 15
+    volumes:
+      - bidsynq_documents:/app/storage/tender_documents
+    ports:
+      - "8000:8000"
+    depends_on:
+      db:
+        condition: service_healthy
+  frontend:
+    build:
+      context: ./frontend
+      args:
+        NEXT_PUBLIC_API_URL: http://localhost:8000
+    ports:
+      - "3000:3000"
+    depends_on:
+      - api
+volumes:
+  bidsynq_pgdata:
+  bidsynq_documents:
