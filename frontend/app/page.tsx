@@ -1,73 +1,381 @@
-'use client';
-import { FormEvent, useEffect, useMemo, useState } from 'react';
 
-type User = { id:number; name:string; email:string; role:string; company_name:string };
-type Tender = { id:number; buyer_id:number; title:string; description:string; category:string; quantity:number; tender_type:string; deadline:string; status:string; mandatory_requirements:string; anti_sniping:boolean; created_at:string };
-type Bid = { id:number; tender_id:number; supplier_id:number; price:number; delivery_days:number; validity_days:number; requirement_match:number; mandatory_met:boolean; compliance_notes:string; created_at:string; updated_at:string };
-const API = process.env.NEXT_PUBLIC_API_URL || 'http://127.0.0.1:8000';
+"use client";
 
-export default function Home() {
-  const [token,setToken] = useState(''); const [user,setUser] = useState<User|null>(null);
-  const [mode,setMode] = useState<'login'|'register'>('login'); const [error,setError] = useState(''); const [notice,setNotice] = useState(''); const [loading,setLoading] = useState(false);
-  const [tenders,setTenders] = useState<Tender[]>([]); const [summary,setSummary] = useState<Record<string,number|string>>({});
-  const [filter,setFilter] = useState('open'); const [showCreate,setShowCreate] = useState(false); const [selected,setSelected] = useState<number|null>(null); const [bids,setBids] = useState<Bid[]>([]); const [existingBid,setExistingBid] = useState<Bid|null>(null);
-  const [auth,setAuth] = useState({name:'',email:'',password:'',role:'supplier',company_name:''});
-  const [draft,setDraft] = useState({title:'',description:'',category:'General',quantity:1,tender_type:'rfq',deadline:'',mandatory_requirements:'',anti_sniping:true});
-  const [bidDraft,setBidDraft] = useState({price:'',delivery_days:'7',validity_days:'30',requirement_match:'100',mandatory_met:true,compliance_notes:''});
+import { useMemo, useState, type FormEvent } from "react";
 
-  async function api(path:string, options:RequestInit={}) {
-    const res = await fetch(`${API}${path}`, { ...options, headers: { 'Content-Type':'application/json', ...(token ? {Authorization:`Bearer ${token}`} : {}), ...(options.headers||{}) } });
-    const data = await res.json().catch(()=>({detail:'Unexpected server response'}));
-    if (!res.ok) throw new Error(data.detail || `Request failed (${res.status})`); return data;
+type Page =
+  | "Overview"
+  | "Tenders"
+  | "My Bids"
+  | "Suppliers"
+  | "Price Intelligence"
+  | "Risk & Compliance"
+  | "AI Assistant"
+  | "Audit Trail";
+
+type Tender = {
+  id: string;
+  title: string;
+  buyer: string;
+  category: string;
+  value: number;
+  deadline: string;
+  bids: number;
+  status: "Open" | "Closing soon" | "Under review";
+};
+
+const initialTenders: Tender[] = [
+  { id: "TND-1048", title: "Industrial safety equipment supply", buyer: "Maharashtra Industrial Development Corp.", category: "Industrial", value: 2480000, deadline: "22 Oct 2026", bids: 8, status: "Open" },
+  { id: "TND-1042", title: "IT hardware and workstation refresh", buyer: "Pune Smart City Development Corp.", category: "Technology", value: 1820000, deadline: "24 Oct 2026", bids: 5, status: "Open" },
+  { id: "TND-1039", title: "Solar streetlight maintenance", buyer: "Municipal Council", category: "Energy", value: 1260000, deadline: "26 Oct 2026", bids: 12, status: "Closing soon" },
+  { id: "TND-1027", title: "Office furniture procurement", buyer: "Public Works Division", category: "Facilities", value: 840000, deadline: "29 Oct 2026", bids: 4, status: "Open" },
+  { id: "TND-1018", title: "Water quality testing services", buyer: "Regional Water Authority", category: "Services", value: 690000, deadline: "31 Oct 2026", bids: 7, status: "Under review" },
+];
+
+const suppliers = [
+  { name: "Apex Industrial Solutions", category: "Industrial supplies", score: 96, delivery: "98%", risk: "Low", initials: "AI" },
+  { name: "Vertex Technologies", category: "IT & electronics", score: 91, delivery: "94%", risk: "Low", initials: "VT" },
+  { name: "GreenGrid Energy Co.", category: "Renewable energy", score: 84, delivery: "89%", risk: "Medium", initials: "GG" },
+];
+
+const nav: { label: Page; icon: string; group: string }[] = [
+  { label: "Overview", icon: "◫", group: "WORKSPACE" },
+  { label: "Tenders", icon: "▤", group: "WORKSPACE" },
+  { label: "My Bids", icon: "↗", group: "WORKSPACE" },
+  { label: "Suppliers", icon: "♙", group: "INTELLIGENCE" },
+  { label: "Price Intelligence", icon: "⌁", group: "INTELLIGENCE" },
+  { label: "Risk & Compliance", icon: "◇", group: "INTELLIGENCE" },
+  { label: "AI Assistant", icon: "✳", group: "TOOLS" },
+  { label: "Audit Trail", icon: "☷", group: "TOOLS" },
+];
+
+const titles: Record<Page, string> = {
+  Overview: "Procurement overview",
+  Tenders: "Tender marketplace",
+  "My Bids": "My bid workspace",
+  Suppliers: "Supplier intelligence",
+  "Price Intelligence": "Price intelligence",
+  "Risk & Compliance": "Risk & compliance",
+  "AI Assistant": "Your AI copilot",
+  "Audit Trail": "Audit trail",
+};
+
+const money = (n: number) =>
+  new Intl.NumberFormat("en-IN", {
+    style: "currency",
+    currency: "INR",
+    maximumFractionDigits: 0,
+  }).format(n);
+
+export default function HomePage() {
+  const [active, setActive] = useState<Page>("Overview");
+  const [tenders, setTenders] = useState(initialTenders);
+  const [search, setSearch] = useState("");
+  const [filter, setFilter] = useState("All");
+  const [showCreate, setShowCreate] = useState(false);
+  const [mobileMenu, setMobileMenu] = useState(false);
+  const [toast, setToast] = useState("");
+  const [title, setTitle] = useState("");
+  const [buyer, setBuyer] = useState("");
+  const [category, setCategory] = useState("Technology");
+  const [value, setValue] = useState("");
+  const [deadline, setDeadline] = useState("");
+  const [question, setQuestion] = useState("");
+  const [answer, setAnswer] = useState("");
+
+  function notify(message: string) {
+    setToast(message);
+    window.setTimeout(() => setToast(""), 3000);
   }
-  async function refresh(t=token, f=filter) {
-    if (!t) return;
-    const headers = {Authorization:`Bearer ${t}`};
-    const [meRes,summaryRes,tenderRes] = await Promise.all([
-      fetch(`${API}/auth/me`,{headers}), fetch(`${API}/dashboard/summary`,{headers}), fetch(`${API}/tenders?status=${f}`,{headers})
-    ]);
-    if (!meRes.ok) { logout(); return; }
-    setUser(await meRes.json()); setSummary(await summaryRes.json()); setTenders(await tenderRes.json());
+
+  const filtered = useMemo(() => tenders.filter((t) => {
+    const text = `${t.id} ${t.title} ${t.buyer} ${t.category}`.toLowerCase();
+    const matchesSearch = text.includes(search.toLowerCase());
+    const matchesFilter = filter === "All" || t.status === filter;
+    return matchesSearch && matchesFilter;
+  }), [tenders, search, filter]);
+
+  function createTender(e: FormEvent<HTMLFormElement>) {
+    e.preventDefault();
+    const newTender: Tender = {
+      id: `DRAFT-${Date.now().toString().slice(-5)}`,
+      title,
+      buyer: buyer || "Buyer not specified",
+      category,
+      value: Number(value) || 0,
+      deadline: deadline
+        ? new Date(`${deadline}T12:00:00`).toLocaleDateString("en-GB", {
+            day: "2-digit", month: "short", year: "numeric",
+          })
+        : "Not set",
+      bids: 0,
+      status: "Open",
+    };
+    setTenders((current) => [newTender, ...current]);
+    setShowCreate(false);
+    setActive("Tenders");
+    setTitle("");
+    setBuyer("");
+    setValue("");
+    setDeadline("");
+    notify("Draft added to this browser preview.");
   }
-  useEffect(()=>{ const saved=localStorage.getItem('bidsynq_token'); if(saved){setToken(saved);} },[]);
-  useEffect(()=>{ if(token){ refresh(token).catch(e=>setError(e.message)); } },[token]);
-  useEffect(()=>{ if(token){ refresh(token,filter).catch(e=>setError(e.message)); } },[filter]);
-  const openCount = useMemo(()=>tenders.filter(t=>t.status==='open').length,[tenders]);
-  function logout(){localStorage.removeItem('bidsynq_token');setToken('');setUser(null);setTenders([]);setSummary({});setSelected(null);setError('');setNotice('');}
-  async function submitAuth(e:FormEvent){e.preventDefault();setError('');setLoading(true);try{
-    const body = mode==='login' ? {email:auth.email,password:auth.password} : auth;
-    const data = await api(mode==='login'?'/auth/login':'/auth/register',{method:'POST',body:JSON.stringify(body)});
-    if(mode==='register'){setMode('login');setNotice('Account created. Sign in to continue.');}else{localStorage.setItem('bidsynq_token',data.access_token);setToken(data.access_token);setNotice('Welcome to BidSynq.');}
-  }catch(e){setError((e as Error).message)}finally{setLoading(false)}}
-  async function createTender(e:FormEvent){e.preventDefault();setError('');try{
-    const deadline = new Date(draft.deadline).toISOString();
-    await api('/tenders',{method:'POST',body:JSON.stringify({...draft,quantity:Number(draft.quantity),deadline})});
-    setNotice('Tender published successfully.');setShowCreate(false);setDraft({title:'',description:'',category:'General',quantity:1,tender_type:'rfq',deadline:'',mandatory_requirements:'',anti_sniping:true});await refresh();
-  }catch(e){setError((e as Error).message)}}
-  async function openBidForm(t:Tender){setError('');setExistingBid(null);setSelected(t.id);setBidDraft({price:'',delivery_days:'7',validity_days:'30',requirement_match:'100',mandatory_met:true,compliance_notes:''});try{const mine:Bid[]=await api(`/tenders/${t.id}/bids`);if(mine.length){if(t.tender_type!=='reverse_auction'){setSelected(null);setNotice('You have already submitted a bid for this tender.');return;}const b=mine[0];setExistingBid(b);setBidDraft({price:String(b.price),delivery_days:String(b.delivery_days),validity_days:String(b.validity_days),requirement_match:String(b.requirement_match),mandatory_met:b.mandatory_met,compliance_notes:b.compliance_notes||''});}}catch(e){setError((e as Error).message);setSelected(null)}}
-  async function submitBid(e:FormEvent,tenderId:number){e.preventDefault();setError('');try{
-    const body=JSON.stringify({...bidDraft,price:Number(bidDraft.price),delivery_days:Number(bidDraft.delivery_days),validity_days:Number(bidDraft.validity_days),requirement_match:Number(bidDraft.requirement_match)});
-    await api(existingBid?`/tenders/${tenderId}/bids/me`:`/tenders/${tenderId}/bids`,{method:existingBid?'PUT':'POST',body});
-    setNotice(existingBid?'Your reverse-auction bid has been revised.':'Your bid has been submitted.');setSelected(null);setExistingBid(null);setBidDraft({price:'',delivery_days:'7',validity_days:'30',requirement_match:'100',mandatory_met:true,compliance_notes:''});await refresh();
-  }catch(e){setError((e as Error).message)}}
-  async function loadBids(id:number){setError('');try{const data=await api(`/tenders/${id}/bids`);setBids(data);setSelected(id)}catch(e){setError((e as Error).message);setSelected(id);setBids([])}}
-  async function closeTender(id:number){setError('');try{await api(`/tenders/${id}/status`,{method:'PATCH',body:JSON.stringify({status:'closed'})});setNotice('Tender closed. Ranking is now available through the API.');await refresh()}catch(e){setError((e as Error).message)}}
 
-  if(!token || !user) return <main className="auth-shell"><section className="auth-story"><div className="brand"><span className="brand-mark">B</span> BidSynq</div><div className="story-copy"><span className="eyebrow">B2B PROCUREMENT, REIMAGINED</span><h1>Better bids.<br/><em>Smarter buying.</em></h1><p>A clearer workspace for sourcing, supplier participation and fair, explainable procurement decisions.</p><div className="story-points"><span>01 <b>Publish opportunities</b></span><span>02 <b>Compare supplier offers</b></span><span>03 <b>Make confident decisions</b></span></div></div><div className="story-footer">PROCUREMENT WORKSPACE · VERSION 2.0</div></section><section className="auth-panel"><form className="auth-card" onSubmit={submitAuth}><span className="eyebrow">YOUR WORKSPACE STARTS HERE</span><h2>{mode==='login'?'Welcome back':'Create your account'}</h2><p className="muted">{mode==='login'?'Sign in to manage tenders and bids.':'Join buyers and suppliers on BidSynq.'}</p>
-    {mode==='register'&&<><label>Full name<input required minLength={2} value={auth.name} onChange={e=>setAuth({...auth,name:e.target.value})} placeholder="Your name"/></label><label>Company name<input value={auth.company_name} onChange={e=>setAuth({...auth,company_name:e.target.value})} placeholder="Company / organisation"/></label><label>Account type<select value={auth.role} onChange={e=>setAuth({...auth,role:e.target.value})}><option value="supplier">Supplier</option><option value="buyer">Buyer</option></select></label></>}
-    <label>Email address<input type="email" required value={auth.email} onChange={e=>setAuth({...auth,email:e.target.value})} placeholder="you@company.com"/></label><label>Password<input type="password" required minLength={8} value={auth.password} onChange={e=>setAuth({...auth,password:e.target.value})} placeholder="At least 8 characters"/></label>
-    {error&&<div className="alert error">{error}</div>}{notice&&<div className="alert success">{notice}</div>}<button className="primary full" disabled={loading}>{loading?'Please wait…':mode==='login'?'Sign in to workspace':'Create account'} <span>→</span></button><p className="switch-auth">{mode==='login'?"New to BidSynq?":"Already have an account?"} <button type="button" className="text-button" onClick={()=>{setMode(mode==='login'?'register':'login');setError('');setNotice('')}}>{mode==='login'?'Create account':'Sign in'}</button></p><p className="tiny">For this development build, use a local API instance. Never use real credentials in a demo environment.</p></form></section></main>;
+  function choosePage(page: Page) {
+    setActive(page);
+    setMobileMenu(false);
+  }
 
-  return <main className="app-shell"><aside className="sidebar"><div className="brand"><span className="brand-mark">B</span> BidSynq</div><div className="workspace-label">WORKSPACE</div><button className="nav-item active">◫ <span>Overview</span></button><button className="nav-item" onClick={()=>setFilter('open')}>⌕ <span>Open tenders</span></button><button className="nav-item" onClick={()=>setFilter('all')}>▤ <span>All tenders</span></button><button className="nav-item" onClick={()=>{window.location.href='/assistant'}}>✳ <span>Document assistant</span></button><div className="sidebar-bottom"><div className="user-mini"><div className="avatar">{user.name.slice(0,1).toUpperCase()}</div><div><b>{user.name}</b><small>{user.role} · {user.company_name||'Independent'}</small></div></div><button className="nav-item logout" onClick={logout}>↪ <span>Sign out</span></button><div className="version-note">BIDSYNQ V4.0 · INTELLIGENCE</div></div></aside>
-    <section className="main-panel"><header className="topbar"><div><span className="eyebrow">PROCUREMENT CONTROL CENTER</span><h1>Good to see you, {user.name.split(' ')[0]}.</h1><p>Here’s what’s happening in your procurement workspace.</p></div><div className="top-actions"><span className="role-pill">{user.role}</span>{user.role!=='supplier'&&<button className="primary" onClick={()=>setShowCreate(!showCreate)}>＋ New tender</button>}</div></header>
-      {error&&<div className="alert error dismiss" onClick={()=>setError('')}>{error} <b>×</b></div>}{notice&&<div className="alert success dismiss" onClick={()=>setNotice('')}>{notice} <b>×</b></div>}
-      <div className="metric-grid">{(user.role==='supplier'?[['My submitted bids',summary.submitted_bids??0,'Your participation'],['Open opportunities',summary.open_tenders??0,'Available to explore']]:[['Total tenders',summary.tenders??0,'In your workspace'],['Open tenders',summary.open_tenders??0,'Accepting bids'],['Bids received',summary.bids_received??0,'Supplier submissions']]).map(([label,value,sub])=><article className="metric-card" key={String(label)}><div className="metric-label">{label}</div><div className="metric-value">{value}</div><div className="metric-foot"><span className="metric-dot"/>{sub}</div></article>)}</div>
-      {showCreate&&<section className="panel create-panel"><div className="section-heading"><div><span className="eyebrow">CREATE OPPORTUNITY</span><h2>Publish a tender</h2></div><button className="icon-button" onClick={()=>setShowCreate(false)}>×</button></div><form className="tender-form" onSubmit={createTender}><label className="span-2">Tender title<input required minLength={4} value={draft.title} onChange={e=>setDraft({...draft,title:e.target.value})} placeholder="e.g. Supply of industrial safety equipment"/></label><label>Category<input required value={draft.category} onChange={e=>setDraft({...draft,category:e.target.value})}/></label><label>Quantity<input type="number" min="1" required value={draft.quantity} onChange={e=>setDraft({...draft,quantity:Number(e.target.value)})}/></label><label>Procurement method<select value={draft.tender_type} onChange={e=>setDraft({...draft,tender_type:e.target.value})}><option value="rfq">Request for quotation (RFQ)</option><option value="sealed">Sealed bidding</option><option value="reverse_auction">Reverse auction</option></select></label><label>Bid deadline<input type="datetime-local" required value={draft.deadline} min={new Date(Date.now()+60000).toISOString().slice(0,16)} onChange={e=>setDraft({...draft,deadline:e.target.value})}/></label><label className="span-2">Description<textarea rows={3} value={draft.description} onChange={e=>setDraft({...draft,description:e.target.value})} placeholder="Scope, specifications, delivery location and other details"/></label><label className="span-2">Mandatory requirements<textarea rows={2} value={draft.mandatory_requirements} onChange={e=>setDraft({...draft,mandatory_requirements:e.target.value})} placeholder="Certifications, compliance, documents required…"/></label>{draft.tender_type==='reverse_auction'&&<label className="check-row span-2"><input type="checkbox" checked={draft.anti_sniping} onChange={e=>setDraft({...draft,anti_sniping:e.target.checked})}/> Extend the deadline by 2 minutes if a bid arrives in the final 2 minutes</label>}<div className="form-actions span-2"><button type="button" className="secondary" onClick={()=>setShowCreate(false)}>Cancel</button><button className="primary">Publish tender <span>→</span></button></div></form></section>}
-      <section className="panel tenders-panel"><div className="section-heading"><div><span className="eyebrow">SOURCING PIPELINE</span><h2>{filter==='open'?'Open tenders':filter==='all'?'All tenders':`${filter[0].toUpperCase()}${filter.slice(1)} tenders`}</h2></div><div className="filters"><button className={filter==='open'?'filter active-filter':'filter'} onClick={()=>setFilter('open')}>Open</button><button className={filter==='all'?'filter active-filter':'filter'} onClick={()=>setFilter('all')}>All</button><button className="icon-button" title="Refresh" onClick={()=>refresh()}>↻</button></div></div>
-        {tenders.length===0?<div className="empty-state"><div className="empty-icon">▤</div><h3>No tenders found</h3><p>{user.role==='buyer'?'Create your first tender to invite supplier bids.':'Check back soon or switch to all tenders.'}</p>{user.role!=='supplier'&&<button className="primary" onClick={()=>setShowCreate(true)}>＋ Create a tender</button>}</div>:<div className="tender-list">{tenders.map(t=><article className="tender-card" key={t.id}><div className="tender-icon">{t.tender_type==='reverse_auction'?'↘':t.tender_type==='sealed'?'▣':'⇄'}</div><div className="tender-content"><div className="tender-title-row"><h3>{t.title}</h3><span className={`status status-${t.status}`}>{t.status}</span></div><p className="tender-desc">{t.description||'No additional description provided.'}</p><div className="tender-meta"><span>◈ {t.category}</span><span>▦ Qty {t.quantity}</span><span>⌁ {t.tender_type.replace('_',' ')}</span><span>◷ Due {new Date(t.deadline).toLocaleString()}</span></div>{t.mandatory_requirements&&<p className="requirements"><b>Requirements:</b> {t.mandatory_requirements}</p>}</div><div className="tender-actions">{user.role==='supplier'&&t.status==='open'&&<button className="primary small" onClick={()=>selected===t.id?setSelected(null):openBidForm(t)}>{t.tender_type==='reverse_auction'?'Place / revise bid':'Place bid'}</button>}{user.role!=='supplier'&&t.status==='open'&&t.buyer_id===user.id&&<button className="secondary small" onClick={()=>closeTender(t.id)}>Close tender</button>}{user.role!=='supplier'&&<button className="secondary small" onClick={()=>loadBids(t.id)}>View bids</button>}</div>
-          {selected===t.id&&user.role==='supplier'&&<form className="inline-bid-form" onSubmit={e=>submitBid(e,t.id)}><h4>{existingBid?'Revise your reverse-auction offer':'Submit your offer'}</h4><div className="bid-inputs"><label>Price<input type="number" min="0.01" step="0.01" required value={bidDraft.price} onChange={e=>setBidDraft({...bidDraft,price:e.target.value})} placeholder="Total offer price"/></label><label>Delivery (days)<input type="number" min="1" required value={bidDraft.delivery_days} onChange={e=>setBidDraft({...bidDraft,delivery_days:e.target.value})}/></label><label>Validity (days)<input type="number" min="1" required value={bidDraft.validity_days} onChange={e=>setBidDraft({...bidDraft,validity_days:e.target.value})}/></label><label>Requirements match (%)<input type="number" min="0" max="100" required value={bidDraft.requirement_match} onChange={e=>setBidDraft({...bidDraft,requirement_match:e.target.value})}/></label></div><label>Compliance notes<textarea rows={2} value={bidDraft.compliance_notes} onChange={e=>setBidDraft({...bidDraft,compliance_notes:e.target.value})} placeholder="Explain how your offer meets the requirements"/></label><label className="check-row"><input type="checkbox" checked={bidDraft.mandatory_met} onChange={e=>setBidDraft({...bidDraft,mandatory_met:e.target.checked})}/> I meet all mandatory requirements</label><div className="form-actions"><button type="button" className="secondary" onClick={()=>setSelected(null)}>Cancel</button><button className="primary">{existingBid?'Revise bid':'Submit bid'}</button></div></form>}
-          {selected===t.id&&user.role!=='supplier'&&<div className="bid-results"><h4>Bid submissions {t.tender_type==='sealed'&&t.status==='open'?'(hidden until tender closes)':''}</h4>{bids.length===0?<p className="muted">No bids available to display.</p>:<div className="bid-table">{bids.map(b=><div className="bid-row" key={b.id}><span>Supplier #{b.supplier_id}</span><b>{new Intl.NumberFormat('en-IN',{style:'currency',currency:'INR',maximumFractionDigits:2}).format(b.price)}</b><span>{b.delivery_days} days</span><span>{b.mandatory_met?'Compliant':'Review required'}</span></div>)}</div>}</div>}
-        </article>)}</div>}
-      </section><footer className="page-footer"><span>BidSynq · Intelligent B2B procurement</span><span>V4.0 INTELLIGENCE <i/> API connected</span></footer>
-    </section></main>;
+  return (
+    <main className="app-shell">
+      {mobileMenu && <button className="mobile-scrim" onClick={() => setMobileMenu(false)} aria-label="Close menu" />}
+
+      <aside className={`sidebar ${mobileMenu ? "sidebar-open" : ""}`}>
+        <div className="brand">
+          <div className="brand-logo">B<span>↗</span></div>
+          <div><strong>BidSynq</strong><small>PROCUREMENT INTELLIGENCE</small></div>
+          <button className="mobile-close" onClick={() => setMobileMenu(false)}>×</button>
+        </div>
+
+        <div className="workspace-card">
+          <div className="avatar">SN</div>
+          <div><strong>My workspace</strong><small>Procurement team</small></div>
+          <span>⌄</span>
+        </div>
+
+        <nav className="side-nav">
+          {(["WORKSPACE", "INTELLIGENCE", "TOOLS"] as const).map((group) => (
+            <div className="nav-group" key={group}>
+              <p>{group}</p>
+              {nav.filter((item) => item.group === group).map((item) => (
+                <button
+                  key={item.label}
+                  onClick={() => choosePage(item.label)}
+                  className={`nav-link ${active === item.label ? "active" : ""}`}
+                >
+                  <span className="nav-icon">{item.icon}</span>
+                  <span>{item.label}</span>
+                  {item.label === "Risk & Compliance" && <i className="nav-count">3</i>}
+                </button>
+              ))}
+            </div>
+          ))}
+        </nav>
+
+        <div className="sidebar-bottom">
+          <div className="upgrade-card">
+            <span className="upgrade-symbol">✦</span>
+            <strong>Procurement, made smarter</strong>
+            <p>Organize opportunities and review supplier intelligence in one place.</p>
+            <button onClick={() => choosePage("AI Assistant")}>Explore AI tools →</button>
+          </div>
+          <div className="user-card">
+            <div className="avatar">SN</div>
+            <div><strong>Workspace admin</strong><small>BidSynq account</small></div>
+          </div>
+        </div>
+      </aside>
+
+      <section className="main-area">
+        <header className="topbar">
+          <div className="breadcrumbs">
+            <button className="menu-toggle" onClick={() => setMobileMenu(true)}>☰</button>
+            <span>Workspace</span><b>/</b><strong>{active}</strong>
+          </div>
+          <div className="topbar-right">
+            <label className="global-search">
+              <span>⌕</span>
+              <input value={search} onChange={(e) => setSearch(e.target.value)} placeholder="Search tenders..." />
+              <kbd>⌕</kbd>
+            </label>
+            <button className="icon-button" onClick={() => notify("You are all caught up.")} aria-label="Notifications">♧</button>
+            <div className="avatar top-avatar">SN</div>
+          </div>
+        </header>
+
+        <div className="page-content">
+          <div className="page-heading">
+            <div>
+              <div className="eyebrow"><i /> PROCUREMENT WORKSPACE <span>/</span> OCT 2026</div>
+              <h1>{titles[active]}</h1>
+              <p>Discover opportunities, manage bids, and make informed procurement decisions.</p>
+            </div>
+            <div className="heading-actions">
+              <button className="btn btn-secondary" onClick={() => notify("Export will be available when connected to your backend.")}>↓ Export</button>
+              <button className="btn btn-primary" onClick={() => setShowCreate(true)}>＋ Create tender</button>
+            </div>
+          </div>
+
+          {active === "Overview" && <>
+            <section className="hero-banner">
+              <div className="hero-copy">
+                <span className="hero-tag">YOUR PROCUREMENT COMMAND CENTER</span>
+                <h2>Better decisions start here<span>.</span></h2>
+                <p>Keep tenders, supplier performance, bids, and risk signals in one organized workspace.</p>
+                <button className="hero-button" onClick={() => choosePage("Tenders")}>Explore opportunities <span>→</span></button>
+              </div>
+              <div className="hero-art"><div className="hero-orbit orbit-one" /><div className="hero-orbit orbit-two" /><div className="hero-core">B<span>↗</span></div><div className="float-chip chip-one">✦ Intelligence</div><div className="float-chip chip-two">↗ Opportunities</div></div>
+            </section>
+
+            <div className="section-heading">
+              <div><h2>Workspace at a glance</h2><p>Example indicators for your procurement activity</p></div>
+              <span className="demo-label"><i /> Demo data</span>
+            </div>
+
+            <div className="stats-grid">
+              <StatCard label="Active tenders" value="24" change="+12.5%" icon="▤" tone="purple" />
+              <StatCard label="Bids submitted" value="18" change="+8.2%" icon="↗" tone="blue" />
+              <StatCard label="Supplier score" value="92.4" change="+3.1 pts" icon="♙" tone="green" />
+              <StatCard label="Risk alerts" value="03" change="Needs review" icon="◇" tone="amber" />
+            </div>
+
+            <div className="content-grid">
+              <section className="panel">
+                <div className="panel-heading">
+                  <div><h2>Trending opportunities</h2><p>Review current tender listings</p></div>
+                  <button className="text-button" onClick={() => choosePage("Tenders")}>View all →</button>
+                </div>
+                <TenderTable tenders={filtered.slice(0, 4)} onOpen={() => choosePage("Tenders")} />
+              </section>
+              <section className="panel">
+                <div className="panel-heading"><div><h2>Recent activity</h2><p>Sample workspace events</p></div></div>
+                <div className="activity-list">
+                  <Activity icon="✓" tone="green" title="Bid submitted" detail="IT hardware refresh" time="12 min ago" />
+                  <Activity icon="✦" tone="purple" title="Risk review completed" detail="Supplier evaluation" time="48 min ago" />
+                  <Activity icon="＋" tone="blue" title="New tender matched" detail="Industrial equipment" time="2 hours ago" />
+                  <Activity icon="◇" tone="amber" title="Compliance check needed" detail="Solar maintenance tender" time="Yesterday" />
+                </div>
+                <button className="text-button" onClick={() => choosePage("Audit Trail")}>Open audit trail →</button>
+              </section>
+            </div>
+          </>}
+
+          {active === "Tenders" && <section className="panel full-panel">
+            <div className="panel-heading">
+              <div><h2>All opportunities</h2><p>Search, filter, and review tender records</p></div>
+              <button className="btn btn-primary" onClick={() => setShowCreate(true)}>＋ New tender</button>
+            </div>
+            <div className="table-filters">
+              <label className="filter-search">⌕ <input value={search} onChange={(e) => setSearch(e.target.value)} placeholder="Search by title, buyer or ID" /></label>
+              <select value={filter} onChange={(e) => setFilter(e.target.value)}>
+                <option>All</option><option>Open</option><option>Closing soon</option><option>Under review</option>
+              </select>
+            </div>
+            <TenderTable tenders={filtered} onOpen={(t) => notify(`${t.id} selected. Connect tender detail endpoint to view full records.`)} />
+            <p className="demo-note">Demo records only. Creating a tender adds it to the current page state, not the server database.</p>
+          </section>}
+
+          {active === "My Bids" && <section className="panel full-panel">
+            <div className="panel-heading"><div><h2>Bid tracking</h2><p>Monitor submissions and next steps</p></div></div>
+            <div className="stats-grid small-stats">
+              <StatCard label="Submitted" value="18" icon="↗" tone="blue" />
+              <StatCard label="Under evaluation" value="06" icon="◷" tone="purple" />
+              <StatCard label="Awarded" value="04" icon="✓" tone="green" />
+              <StatCard label="Drafts" value="03" icon="▤" tone="amber" />
+            </div>
+            <TenderTable tenders={tenders.slice(0, 4)} onOpen={(t) => notify(`Bid workspace for ${t.id} needs your bid API connection.`)} />
+            <p className="demo-note">Bid counts and states are placeholders until loaded from your account.</p>
+          </section>}
+
+          {active === "Suppliers" && <section className="full-panel">
+            <div className="section-heading"><div><h2>Supplier directory</h2><p>Example supplier performance profiles</p></div><span className="demo-label">Demo profiles</span></div>
+            <div className="supplier-grid">
+              {suppliers.map((s) => <article className="supplier-card" key={s.name}>
+                <div className="supplier-card-top"><div className="supplier-avatar">{s.initials}</div><span className={`risk-pill ${s.risk.toLowerCase()}`}>{s.risk} risk</span></div>
+                <h3>{s.name}</h3><p>{s.category}</p>
+                <div className="supplier-metrics"><div><strong>{s.score}<small>/100</small></strong><span>Trust score</span></div><div><strong>{s.delivery}</strong><span>On-time delivery</span></div></div>
+                <div className="score-track"><i style={{ width: `${s.score}%` }} /></div>
+                <button className="text-button" onClick={() => notify(`${s.name}: connect your supplier detail API to view verified records.`)}>View profile →</button>
+              </article>)}
+            </div>
+          </section>}
+
+          {active === "Price Intelligence" && <section className="content-grid">
+            <div className="panel price-panel"><div className="panel-heading"><div><h2>Price benchmark overview</h2><p>Illustrative category comparison</p></div><span className="demo-label">Sample</span></div>
+              {[
+                { name: "IT equipment", price: "₹18.2L", width: "74%", label: "Market estimate" },
+                { name: "Industrial supplies", price: "₹24.8L", width: "92%", label: "Market estimate" },
+                { name: "Renewable energy", price: "₹12.6L", width: "58%", label: "Market estimate" },
+                { name: "Facilities", price: "₹8.4L", width: "42%", label: "Market estimate" },
+              ].map((p) => <div className="price-row" key={p.name}><div><strong>{p.name}</strong><span>{p.label}</span></div><strong>{p.price}</strong><div className="price-track"><i style={{ width: p.width }} /></div></div>)}
+              <p className="demo-note">These figures are examples, not verified market prices or AI-generated estimates.</p>
+            </div>
+            <div className="panel"><h2>Before you compare prices</h2><div className="check-list"><p>✓ Compare equivalent specifications</p><p>✓ Include taxes, shipping, and installation</p><p>✓ Check delivery dates and warranty</p><p>✓ Verify vendor quotations and source dates</p></div></div>
+          </section>}
+
+          {active === "Risk & Compliance" && <section className="panel full-panel">
+            <div className="panel-heading"><div><h2>Risk review queue</h2><p>Sample signals to investigate before making a decision</p></div><span className="risk-pill medium">3 items</span></div>
+            <RiskRow level="High" title="Missing compliance documentation" detail="Confirm required certificates before evaluation." date="22 Oct" />
+            <RiskRow level="Medium" title="Supplier delivery performance" detail="Review delivery history and supporting evidence." date="24 Oct" />
+            <RiskRow level="Medium" title="Tender deadline approaching" detail="Check that all mandatory bid documents are ready." date="26 Oct" />
+            <p className="demo-note">Sample risk items only. Do not use these as actual compliance findings.</p>
+          </section>}
+
+          {active === "AI Assistant" && <section className="content-grid assistant-layout">
+            <div className="panel assistant-panel">
+              <div className="assistant-icon">✳</div><span className="eyebrow">BIDSYNQ INTELLIGENCE</span>
+              <h2>Your procurement copilot</h2>
+              <p>Ask for help with tender preparation, supplier comparisons, evaluation criteria, and risk checklists.</p>
+              <div className="suggestions">
+                {["What should I check before submitting a bid?", "How can I compare supplier quotations?", "Create a tender evaluation checklist."].map((q) => <button key={q} onClick={() => setQuestion(q)}>{q} <span>↗</span></button>)}
+              </div>
+              <form className="assistant-form" onSubmit={(e) => { e.preventDefault(); if (question.trim()) setAnswer("This frontend preview is not connected to an AI model. Your question was: " + question); }}>
+                <input value={question} onChange={(e) => setQuestion(e.target.value)} placeholder="Ask about tenders, bids, suppliers..." />
+                <button className="btn btn-primary">Ask AI ↗</button>
+              </form>
+              {answer && <div className="answer-box"><strong>Preview response</strong><p>{answer}</p></div>}
+              <p className="demo-note">Connect this interface to your backend assistant endpoint for real AI responses.</p>
+            </div>
+            <div className="panel"><h2>Suggested workflows</h2><Activity icon="▤" tone="purple" title="Tender analysis" detail="Extract requirements and deadlines" time="Workflow" /><Activity icon="⇄" tone="blue" title="Supplier comparison" detail="Build a structured comparison table" time="Workflow" /><Activity icon="◇" tone="amber" title="Risk checklist" detail="Identify items that need verification" time="Workflow" /></div>
+          </section>}
+
+          {active === "Audit Trail" && <section className="panel full-panel">
+            <div className="panel-heading"><div><h2>Activity history</h2><p>Illustrative events for the workspace</p></div><button className="btn btn-secondary" onClick={() => notify("Export requires backend audit records.")}>↓ Export log</button></div>
+            <div className="audit-list">
+              {[
+                ["Bid submitted", "TND-1042", "Today · 12:14", "Success"],
+                ["Risk review completed", "GreenGrid Energy Co.", "Today · 11:38", "Completed"],
+                ["Tender opportunity matched", "TND-1048", "Today · 10:26", "New"],
+                ["Supplier profile reviewed", "Apex Industrial Solutions", "Yesterday · 16:40", "Completed"],
+              ].map((row) => <div className="audit-row" key={row[0]}><div><strong>{row[0]}</strong><small>{row[1]}</small></div><span>{row[2]}</span><i>{row[3]}</i></div>)}
+            </div>
+            <p className="demo-note">For compliance use, load audit events from the server and record authenticated user actions.</p>
+          </section>}
+
+          <footer className="page-footer"><span>© 2026 BidSynq</span><span><i /> Procurement intelligence workspace <b>·</b> Preview mode</span></footer>
+        </div>
+      </section>
+
+      {showCreate && <div className="modal-backdrop" onMouseDown={(e) => { if (e.target === e.currentTarget) setShowCreate(false); }}>
+        <form className="create-modal" onSubmit={createTender}>
+          <div className="modal-header"><div><span className="eyebrow">WORKSPACE ACTION</span><h2>Create tender draft</h2><p>Add the basic details for a procurement opportunity.</p></div><button type="button" className="modal-close" onClick={() => setShowCreate(false)}>×</button></div>
+          <label>Tender title<input required value={title} onChange={(e) => setTitle(e.target.value)} placeholder="e.g. Office equipment procurement" /></label>
+          <label>Buyer / organization<input value={buyer} onChange={(e) => setBuyer(e.target.value)} placeholder="Organization name" /></label>
+          <label>Category<select value={category} onChange={(e) => setCategory(e.target.value)}><option>Technology</option><option>Industrial</option><option>Energy</option><option>Facilities</option><option>Services</option></select></label>
+          <label>Estimated value (INR)<input type="number" min="0" value={value} onChange={(e) => setValue(e.target.value)} placeholder="500000" /></label>
+          <label>Deadline<input type="date" value={deadline} onChange={(e) => setDeadline(e.target.value)} /></label>
+          <p className="demo-note">This creates a local preview record only; it does not save to your database.</p>
+          <div className="modal-actions"><button type="button" className="btn btn-secondary" onClick={() => setShowCreate(false)}>Cancel</button><button className="btn btn-primary">Save draft →</button></div>
+        </form>
+      </div>}
+
+      {toast && <div className="toast" role="status"><span>✓</span>{toast}<button onClick={() => setToast("")}>×</button></div>}
+    </main>
+  );
+}
+
+function StatCard({ label, value, change, icon, tone }: { label: string; value: string; change?: string; icon: string; tone: string }) {
+  return <article className="stat-card"><div className="stat-top"><span>{label}</span><span className={`stat-icon ${tone}`}>{icon}</span></div><div className="stat-value">{value}</div><div className="stat-change">{change && <span>↗ </span>}{change || "Workspace metric"}</div><div className="mini-bars"><i/><i/><i/><i/><i/><i/><i/><i/></div></article>;
+}
+
+function TenderTable({ tenders, onOpen }: { tenders: Tender[]; onOpen: (t: Tender) => void }) {
+  return <div className="table-wrap"><table className="tender-table"><thead><tr><th>TENDER / BUYER</th><th>CATEGORY</th><th>EST. VALUE</th><th>BIDS</th><th>DEADLINE</th><th>STATUS</th><th /></tr></thead><tbody>{tenders.map((t) => <tr key={t.id}><td><button className="tender-link" onClick={() => onOpen(t)}><strong>{t.title}</strong><small>{t.id} · {t.buyer}</small></button></td><td><span className="category-chip">{t.category}</span></td><td className="value-cell">{money(t.value)}</td><td>{t.bids}</td><td>{t.deadline}</td><td><span className={`status-pill ${t.status === "Closing soon" ? "warning" : t.status === "Under review" ? "review" : "open"}`}><i/>{t.status}</span></td><td><button className="row-action" onClick={() => onOpen(t)} aria-label={`Open ${t.id}`}>↗</button></td></tr>)}</tbody></table>{tenders.length === 0 && <div className="empty-state">No tenders match your search. Try another term or status.</div>}</div>;
+}
+
+function Activity({ icon, tone, title, detail, time }: { icon: string; tone: string; title: string; detail: string; time: string }) {
+  return <div className="activity-item"><span className={`activity-icon ${tone}`}>{icon}</span><div className="activity-copy"><strong>{title}</strong><p>{detail}</p><small>{time}</small></div></div>;
+}
+
+function RiskRow({ level, title, detail, date }: { level: string; title: string; detail: string; date: string }) {
+  return <div className="risk-row"><span className={`risk-level ${level.toLowerCase()}`}>{level}</span><div><strong>{title}</strong><p>{detail}</p></div><span className="risk-date">{date}</span><button className="row-action" aria-label={`Review ${title}`}>↗</button></div>;
 }
