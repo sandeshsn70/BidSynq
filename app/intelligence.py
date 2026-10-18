@@ -1,53 +1,215 @@
-"""Explainable supplier trust and price-intelligence helpers for BidSynq V4."""
+"""Explainable supplier-trust, tender-similarity, and price-intelligence helpers."""
 from __future__ import annotations
-from collections import Counter
-from statistics import median
+
 import re
+from statistics import median
+from typing import Any
+
+
+def _number(value: Any, default: float = 0.0) -> float:
+    try:
+        result = float(value)
+        return result if result == result and abs(result) != float("inf") else default
+    except (TypeError, ValueError, OverflowError):
+        return default
+
+
+def _integer(value: Any, default: int = 0) -> int:
+    try:
+        return int(value)
+    except (TypeError, ValueError, OverflowError):
+        return default
+
 
 def supplier_trust(outcomes: list[dict]) -> dict:
-    """Bayesian-smoothed 0-100 score; no history means neutral prior, not a bad rating."""
-    n = len(outcomes)
-    prior_score = 70.0
-    prior_weight = 3.0
+    """Return an explainable, smoothed 0-100 advisory score from recorded outcomes."""
+    valid = [o for o in (outcomes or []) if isinstance(o, dict)]
+    n = len(valid)
+    prior_score, prior_weight = 70.0, 3.0
+
     if not n:
-        return {"score": round(prior_score, 1), "confidence": "no_history", "observations": 0,
-                "components": {"quality": None, "on_time_rate": None, "issue_rate": None},
-                "explanation": "No verified delivery outcomes are recorded. The score is a neutral prior, not a performance judgement."}
-    quality = sum(max(1.0, min(5.0, float(o.get("quality_score", 3)))) for o in outcomes) / n
-    on_time_rate = sum(bool(o.get("on_time", False)) for o in outcomes) / n
-    issue_rate = sum(max(0, int(o.get("issue_count", 0))) for o in outcomes) / n
-    observed = (quality - 1) / 4 * 100 * 0.55 + on_time_rate * 100 * 0.30 + max(0, 100 - min(issue_rate, 5) * 20) * 0.15
-    score = (observed * n + prior_score * prior_weight) / (n + prior_weight)
+        return {
+            "score": prior_score,
+            "confidence": "no_history",
+            "observations": 0,
+            "components": {
+                "quality": None,
+                "on_time_rate": None,
+                "issue_rate": None,
+            },
+            "explanation": (
+                "No verified delivery outcomes are recorded. "
+                "This is a neutral prior, not a performance judgement."
+            ),
+        }
+
+    qualities = [
+        max(1.0, min(5.0, _number(o.get("quality_score"), 3.0)))
+        for o in valid
+    ]
+    on_time_rate = sum(
+        bool(o.get("on_time", False)) for o in valid
+    ) / n
+    issue_rate = sum(
+        max(0, _integer(o.get("issue_count"), 0)) for o in valid
+    ) / n
+    quality = sum(qualities) / n
+
+    observed = (
+        ((quality - 1) / 4 * 100 * 0.55)
+        + (on_time_rate * 100 * 0.30)
+        + (max(0, 100 - min(issue_rate, 5) * 20) * 0.15)
+    )
+
+    score = (
+        (observed * n + prior_score * prior_weight)
+        / (n + prior_weight)
+    )
     confidence = "low" if n < 3 else "medium" if n < 10 else "higher"
-    return {"score": round(max(0, min(100, score)), 1), "confidence": confidence, "observations": n,
-            "components": {"quality": round(quality, 2), "on_time_rate": round(on_time_rate, 3), "average_issue_count": round(issue_rate, 2)},
-            "explanation": "Score combines buyer-recorded quality (55%), on-time delivery rate (30%) and issue frequency (15%), smoothed toward a neutral prior. It is advisory and may reflect reporting bias."}
+
+    return {
+        "score": round(max(0.0, min(100.0, score)), 1),
+        "confidence": confidence,
+        "observations": n,
+        "components": {
+            "quality": round(quality, 2),
+            "on_time_rate": round(on_time_rate, 3),
+            "average_issue_count": round(issue_rate, 2),
+        },
+        "explanation": (
+            "Score combines buyer-recorded quality (55%), on-time delivery "
+            "(30%), and issue frequency (15%), smoothed toward a neutral prior. "
+            "It is advisory and may reflect reporting bias."
+        ),
+    }
+
 
 def token_similarity(a: str, b: str) -> float:
-    stop = {"the", "and", "for", "with", "from", "supply", "procurement", "of", "to", "in"}
-    ta = {t for t in re.findall(r"[a-z0-9]+", (a or "").lower()) if len(t) > 2 and t not in stop}
-    tb = {t for t in re.findall(r"[a-z0-9]+", (b or "").lower()) if len(t) > 2 and t not in stop}
-    return len(ta & tb) / max(1, len(ta | tb))
+    stop = {
+        "the", "and", "for", "with", "from", "supply",
+        "procurement", "of", "to", "in", "a", "an", "is", "are",
+    }
 
-def similar_tenders(target: dict, candidates: list[dict], limit: int = 5) -> list[dict]:
+    ta = {
+        t for t in re.findall(r"[a-z0-9]+", str(a or "").lower())
+        if len(t) > 2 and t not in stop
+    }
+    tb = {
+        t for t in re.findall(r"[a-z0-9]+", str(b or "").lower())
+        if len(t) > 2 and t not in stop
+    }
+
+    union = ta | tb
+    return len(ta & tb) / len(union) if union else 0.0
+
+
+def similar_tenders(
+    target: dict,
+    candidates: list[dict],
+    limit: int = 5,
+) -> list[dict]:
+    target = target or {}
     results = []
-    for c in candidates:
-        if c.get("id") == target.get("id"): continue
-        category_match = (c.get("category", "").strip().lower() == target.get("category", "").strip().lower())
-        text_score = token_similarity(f"{target.get('title','')} {target.get('description','')}", f"{c.get('title','')} {c.get('description','')}")
-        qty_a, qty_b = max(1, int(target.get("quantity", 1))), max(1, int(c.get("quantity", 1)))
-        qty_similarity = min(qty_a, qty_b) / max(qty_a, qty_b)
-        score = (0.55 if category_match else 0.0) + 0.35 * text_score + 0.10 * qty_similarity
+
+    try:
+        max_results = max(0, min(int(limit), 50))
+    except (TypeError, ValueError):
+        max_results = 5
+
+    target_category = str(
+        target.get("category") or ""
+    ).strip().casefold()
+    target_text = (
+        f"{target.get('title', '')} "
+        f"{target.get('description', '')}"
+    )
+    target_qty = max(1, _integer(target.get("quantity"), 1))
+
+    for candidate in candidates or []:
+        if (
+            not isinstance(candidate, dict)
+            or candidate.get("id") == target.get("id")
+        ):
+            continue
+
+        category = str(
+            candidate.get("category") or ""
+        ).strip().casefold()
+
+        category_match = bool(
+            target_category
+            and category
+            and category == target_category
+        )
+
+        text_score = token_similarity(
+            target_text,
+            f"{candidate.get('title', '')} "
+            f"{candidate.get('description', '')}",
+        )
+
+        quantity = max(
+            1, _integer(candidate.get("quantity"), 1)
+        )
+        quantity_similarity = (
+            min(target_qty, quantity) / max(target_qty, quantity)
+        )
+
+        score = (
+            (0.55 if category_match else 0.0)
+            + (0.35 * text_score)
+            + (0.10 * quantity_similarity)
+        )
+
         if category_match or text_score > 0:
-            results.append({"tender_id": c["id"], "title": c.get("title", ""), "category": c.get("category", ""),
-                            "quantity": qty_b, "similarity": round(score, 3), "status": c.get("status", ""),
-                            "created_at": c.get("created_at")})
-    return sorted(results, key=lambda x: x["similarity"], reverse=True)[:limit]
+            results.append({
+                "tender_id": candidate.get("id"),
+                "title": candidate.get("title", ""),
+                "category": candidate.get("category", ""),
+                "quantity": quantity,
+                "similarity": round(score, 3),
+                "status": candidate.get("status", ""),
+                "created_at": candidate.get("created_at"),
+            })
+
+    return sorted(
+        results,
+        key=lambda item: item["similarity"],
+        reverse=True,
+    )[:max_results]
+
 
 def estimate_price(target: dict, history: list[dict]) -> dict:
-    """Train an optional XGBoost model, else sklearn RF; fall back to same-category historical bids."""
-    usable = [h for h in history if float(h.get("price", 0)) > 0 and int(h.get("quantity", 0)) > 0]
-    same = [h for h in usable if str(h.get("category", "")).strip().lower() == str(target.get("category", "")).strip().lower()]
+    """Estimate total bid price using an optional ML model or median baseline."""
+    target = target or {}
+    usable = []
+
+    for item in history or []:
+        if not isinstance(item, dict):
+            continue
+
+        price = _number(item.get("price"))
+        quantity = _integer(item.get("quantity"))
+
+        if price > 0 and quantity > 0:
+            usable.append({
+                **item,
+                "price": price,
+                "quantity": quantity,
+                "category": str(item.get("category") or "General"),
+            })
+
+    target_category = str(target.get("category") or "General")
+    target_quantity = max(1, _integer(target.get("quantity"), 1))
+
+    same = [
+        item for item in usable
+        if item["category"].strip().casefold()
+        == target_category.strip().casefold()
+    ]
+
+    model_error = "insufficient_training_samples"
+
     if len(usable) >= 8:
         try:
             import numpy as np
@@ -55,45 +217,139 @@ def estimate_price(target: dict, history: list[dict]) -> dict:
             from sklearn.preprocessing import OneHotEncoder, StandardScaler
             from sklearn.pipeline import Pipeline
             from sklearn.ensemble import RandomForestRegressor
-            X = [{"category": str(h.get("category", "General")), "quantity": int(h["quantity"])} for h in usable]
-            y = np.array([float(h["price"]) for h in usable])
-            # Prefer XGBoost if installed; a random forest remains a usable local baseline.
+
+            x = [
+                {
+                    "category": item["category"],
+                    "quantity": item["quantity"],
+                }
+                for item in usable
+            ]
+            y = np.array(
+                [item["price"] for item in usable],
+                dtype=float,
+            )
+
             try:
                 from xgboost import XGBRegressor
-                reg = XGBRegressor(n_estimators=100, max_depth=3, learning_rate=0.05, objective="reg:squarederror", n_jobs=1, random_state=42)
+
+                regressor = XGBRegressor(
+                    n_estimators=100,
+                    max_depth=3,
+                    learning_rate=0.05,
+                    objective="reg:squarederror",
+                    n_jobs=1,
+                    random_state=42,
+                )
                 model_name = "XGBoost"
+
             except Exception:
-                reg = RandomForestRegressor(n_estimators=120, min_samples_leaf=2, random_state=42, n_jobs=1)
+                regressor = RandomForestRegressor(
+                    n_estimators=120,
+                    min_samples_leaf=2,
+                    random_state=42,
+                    n_jobs=1,
+                )
                 model_name = "RandomForestRegressor"
-            pre = ColumnTransformer([("category", OneHotEncoder(handle_unknown="ignore"), ["category"]), ("quantity", StandardScaler(), ["quantity"])])
-            model = Pipeline([("features", pre), ("model", reg)])
-            model.fit(X, y)
-            pred = float(model.predict([{"category": str(target.get("category", "General")), "quantity": int(target.get("quantity", 1))}])[0])
-            if pred > 0 and np.isfinite(pred):
-                if same:
-                    comparable = [float(h["price"]) for h in same]
-                    low, high = float(np.percentile(comparable, 20)), float(np.percentile(comparable, 80))
+
+            transformer = ColumnTransformer([
+                (
+                    "category",
+                    OneHotEncoder(handle_unknown="ignore"),
+                    ["category"],
+                ),
+                (
+                    "quantity",
+                    StandardScaler(),
+                    ["quantity"],
+                ),
+            ])
+
+            model = Pipeline([
+                ("features", transformer),
+                ("model", regressor),
+            ])
+
+            model.fit(x, y)
+
+            prediction = float(model.predict([{
+                "category": target_category,
+                "quantity": target_quantity,
+            }])[0])
+
+            if np.isfinite(prediction) and prediction > 0:
+                prices = [item["price"] for item in same]
+
+                if prices:
+                    low = float(np.percentile(prices, 20))
+                    high = float(np.percentile(prices, 80))
                     source = "model_plus_category_history"
                 else:
-                    low, high = pred * 0.85, pred * 1.15
+                    low = prediction * 0.85
+                    high = prediction * 1.15
                     source = "model_estimate_only"
-                return {"currency": "INR", "predicted_total_price": round(pred, 2), "suggested_range": {"low": round(max(0, min(low, pred)), 2), "high": round(max(high, pred), 2)},
-                        "model": model_name, "training_samples": len(usable), "same_category_samples": len(same), "source": source,
-                        "explanation": "Estimate learned from historical bid totals and tender quantity/category. Range is an indicative uncertainty band, not a quote.",
-                        "feature_importance": "Not calculated; install the optional shap package for a future local explanation layer."}
+
+                return {
+                    "currency": "INR",
+                    "predicted_total_price": round(prediction, 2),
+                    "suggested_range": {
+                        "low": round(max(0, min(low, prediction)), 2),
+                        "high": round(max(high, prediction), 2),
+                    },
+                    "model": model_name,
+                    "training_samples": len(usable),
+                    "same_category_samples": len(same),
+                    "source": source,
+                    "explanation": (
+                        "Estimate learned from historical bid totals and "
+                        "tender quantity/category. The range is indicative, "
+                        "not a quote."
+                    ),
+                    "feature_importance": "Not calculated.",
+                }
+
+            model_error = "model_returned_invalid_prediction"
+
         except Exception as exc:
             model_error = type(exc).__name__
-        else:
-            model_error = "unknown"
-    else:
-        model_error = "insufficient_training_samples"
+
     if same:
-        prices = [float(h["price"]) for h in same]
+        prices = sorted(item["price"] for item in same)
         center = median(prices)
-        low = sorted(prices)[max(0, int((len(prices)-1)*0.2))]
-        high = sorted(prices)[min(len(prices)-1, int((len(prices)-1)*0.8))]
-        return {"currency": "INR", "predicted_total_price": round(center, 2), "suggested_range": {"low": round(min(low, center), 2), "high": round(max(high, center), 2)},
-                "model": "category_median_baseline", "training_samples": len(usable), "same_category_samples": len(same), "source": "historical_comparables",
-                "explanation": "A simple median of same-category historical bid totals is used because there is not enough history for a reliable ML model. This may be misleading when quantities differ.", "model_note": model_error}
-    return {"currency": "INR", "predicted_total_price": None, "suggested_range": None, "model": None, "training_samples": len(usable), "same_category_samples": 0, "source": "insufficient_data",
-            "explanation": "Not enough comparable historical bids are available. Collect more completed procurement data before using price estimates.", "model_note": model_error}
+        low = prices[max(0, int((len(prices) - 1) * 0.2))]
+        high = prices[
+            min(len(prices) - 1, int((len(prices) - 1) * 0.8))
+        ]
+
+        return {
+            "currency": "INR",
+            "predicted_total_price": round(center, 2),
+            "suggested_range": {
+                "low": round(min(low, center), 2),
+                "high": round(max(high, center), 2),
+            },
+            "model": "category_median_baseline",
+            "training_samples": len(usable),
+            "same_category_samples": len(same),
+            "source": "historical_comparables",
+            "explanation": (
+                "A median of same-category historical bid totals is used. "
+                "It may be misleading when quantities or specifications differ."
+            ),
+            "model_note": model_error,
+        }
+
+    return {
+        "currency": "INR",
+        "predicted_total_price": None,
+        "suggested_range": None,
+        "model": None,
+        "training_samples": len(usable),
+        "same_category_samples": 0,
+        "source": "insufficient_data",
+        "explanation": (
+            "There is not enough comparable historical data "
+            "to estimate a price responsibly."
+        ),
+        "model_note": model_error,
+    }
