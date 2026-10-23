@@ -12,13 +12,25 @@ import json
 from datetime import datetime, timezone
 from typing import Any
 
-from sqlalchemy import select
+from sqlalchemy import select, text
 from sqlalchemy.orm import Session
 
 from app.models import AuditLog
 
 
 GENESIS_HASH = "0" * 64
+# Arbitrary constant used to serialise audit writes on PostgreSQL.
+AUDIT_LOCK_KEY = 7_426_001
+
+
+def _lock_chain(db: Session) -> None:
+    """Serialise concurrent audit writes so two requests cannot fork the chain.
+
+    The advisory lock is released automatically when the surrounding transaction
+    commits or rolls back. SQLite (development/tests) needs no extra lock.
+    """
+    if db.get_bind().dialect.name == "postgresql":
+        db.execute(text("SELECT pg_advisory_xact_lock(:key)"), {"key": AUDIT_LOCK_KEY})
 
 
 def canonical_json(value: Any) -> str:
@@ -99,6 +111,8 @@ def append_audit(
 
     # Validate serialization before adding the database row.
     details_json = canonical_json(audit_details)
+
+    _lock_chain(db)
 
     previous = db.scalar(
         select(AuditLog)

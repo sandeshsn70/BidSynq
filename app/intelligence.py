@@ -6,6 +6,11 @@ from statistics import median
 from typing import Any
 
 
+# Never report a range built from fewer comparable bids than this: with 1-2 samples the
+# "range" would simply reveal other suppliers' actual bid prices.
+MIN_COMPARABLES = 3
+
+
 def _number(value: Any, default: float = 0.0) -> float:
     try:
         result = float(value)
@@ -280,7 +285,7 @@ def estimate_price(target: dict, history: list[dict]) -> dict:
             if np.isfinite(prediction) and prediction > 0:
                 prices = [item["price"] for item in same]
 
-                if prices:
+                if len(prices) >= MIN_COMPARABLES:
                     low = float(np.percentile(prices, 20))
                     high = float(np.percentile(prices, 80))
                     source = "model_plus_category_history"
@@ -313,7 +318,7 @@ def estimate_price(target: dict, history: list[dict]) -> dict:
         except Exception as exc:
             model_error = type(exc).__name__
 
-    if same:
+    if len(same) >= MIN_COMPARABLES:
         prices = sorted(item["price"] for item in same)
         center = median(prices)
         low = prices[max(0, int((len(prices) - 1) * 0.2))]
@@ -345,11 +350,11 @@ def estimate_price(target: dict, history: list[dict]) -> dict:
         "suggested_range": None,
         "model": None,
         "training_samples": len(usable),
-        "same_category_samples": 0,
+        "same_category_samples": len(same),
         "source": "insufficient_data",
         "explanation": (
-            "There is not enough comparable historical data "
-            "to estimate a price responsibly."
+            f"There is not enough comparable historical data (at least {MIN_COMPARABLES} "
+            "same-category bids are needed) to estimate a price responsibly."
         ),
         "model_note": model_error,
     }

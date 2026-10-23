@@ -42,12 +42,21 @@ def _weight(tender: Tender, name: str) -> float:
     return max(0.0, _number(getattr(tender, name, 0.0)))
 
 
-def rank_bids(tender: Tender, bids: Iterable[Bid]) -> list[dict[str, Any]]:
+DEFAULT_TRUST = 50.0
+
+
+def rank_bids(
+    tender: Tender,
+    bids: Iterable[Bid],
+    trust_scores: dict[int, float] | None = None,
+) -> list[dict[str, Any]]:
     """Rank bids using tender weights and transparent reason codes.
 
     Mandatory-ineligible bids always score zero. Eligible bids are scored against
-    other eligible bids for price and delivery, while trust and requirement-match
-    use their stored 0-100 values. Original API response keys are preserved.
+    other eligible bids for price and delivery (lowest = 100, highest = 0, linear in
+    between), while trust (``trust_scores`` keyed by supplier id, 0-100) and
+    requirement-match use 0-100 values. A missing trust score defaults to 50.
+    Original API response keys are preserved; ``explanation`` is added.
     """
     bid_list = list(bids)
     if not bid_list:
@@ -81,6 +90,7 @@ def rank_bids(tender: Tender, bids: Iterable[Bid]) -> list[dict[str, Any]]:
                 "eligible": False,
                 "score": 0.0,
                 "reason_codes": ["MANDATORY_REQUIREMENTS_NOT_MET"],
+                "explanation": ["The supplier declared that mandatory requirements are not met, so the bid scores 0."],
             })
             continue
 
@@ -88,7 +98,7 @@ def rank_bids(tender: Tender, bids: Iterable[Bid]) -> list[dict[str, Any]]:
         delivery = _number(getattr(bid, "delivery_days", 0.0))
         price_score = _inverse_score(price, prices)
         delivery_score = _inverse_score(delivery, deliveries)
-        trust_score = _clamp(_number(getattr(bid, "trust_score", 50.0), 50.0))
+        trust_score = _clamp(_number((trust_scores or {}).get(supplier_id), DEFAULT_TRUST), 0.0, 100.0)
         match_score = _clamp(_number(getattr(bid, "requirement_match", 0.0)))
 
         # Normalize the configured weights, so a set of weights summing to 1,
@@ -122,6 +132,14 @@ def rank_bids(tender: Tender, bids: Iterable[Bid]) -> list[dict[str, Any]]:
             "requirement_match": round(match_score, 2),
             "score": round(_clamp(score), 2),
             "reason_codes": codes,
+            "explanation": [
+                f"Price score {price_score:.1f}/100 (weight {weights['price'] / weight_total:.0%}): "
+                f"{price:,.2f} against eligible bids from {min(prices):,.2f} to {max(prices):,.2f}.",
+                f"Delivery score {delivery_score:.1f}/100 (weight {weights['delivery'] / weight_total:.0%}): "
+                f"{delivery:g} days against {min(deliveries):g}-{max(deliveries):g} days.",
+                f"Trust score {trust_score:.1f}/100 (weight {weights['trust'] / weight_total:.0%}) from recorded outcomes.",
+                f"Requirement match {match_score:.1f}/100 (weight {weights['match'] / weight_total:.0%}), self-declared by the supplier.",
+            ],
         })
 
     # Eligible bids appear first, highest score first. ID is a deterministic
